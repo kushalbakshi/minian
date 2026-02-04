@@ -851,12 +851,12 @@ class TaskAnnotation(SchedulerPlugin):
                     ts = parent.tasks.get(tk)
                     res = annt.get("resources", None)
                     if res:
-                        ts._resource_restrictions = res
+                        ts.resource_restrictions = res
                     pri = annt.get("priority", None)
                     if pri:
-                        pri_org = list(ts._priority)
+                        pri_org = list(ts.priority)
                         pri_org[0] = -pri
-                        ts._priority = tuple(pri_org)
+                        ts.priority = tuple(pri_org)
 
 
 def custom_arr_optimize(
