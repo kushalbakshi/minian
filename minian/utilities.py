@@ -848,7 +848,7 @@ class TaskAnnotation(SchedulerPlugin):
         for tk in tasks.keys():
             for pattern, annt in self.annt_dict.items():
                 if re.search(pattern, tk):
-                    ts = parent._tasks.get(tk)
+                    ts = parent.tasks.get(tk)
                     res = annt.get("resources", None)
                     if res:
                         ts._resource_restrictions = res
