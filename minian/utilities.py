@@ -110,7 +110,7 @@ def load_videos(
     file_extension = os.path.splitext(vlist[0])[1]
     if file_extension in (".avi", ".mkv"):
         movie_load_func = load_avi_lazy
-    elif file_extension == ".tif":
+    elif file_extension == ".tif" or file_extension == ".tiff":
         movie_load_func = load_tif_lazy
     else:
         raise ValueError("Extension not supported.")
@@ -158,6 +158,7 @@ def load_tif_lazy(fname: str) -> darr.array:
     arr : darr.array
         Resulting dask array representation of the tif stack.
     """
+    
     data = TiffFile(fname)
     f = len(data.pages)
 
@@ -170,7 +171,7 @@ def load_tif_lazy(fname: str) -> darr.array:
         for fm in flist
     ]
     return da.array.stack(arr, axis=0)
-
+    
 
 def load_tif_perframe(fname: str, fid: int) -> np.ndarray:
     """
@@ -189,6 +190,7 @@ def load_tif_perframe(fname: str, fid: int) -> np.ndarray:
         Array representation of the image.
     """
     return imread(fname, key=fid)
+
 
 
 def load_avi_lazy_framewise(fname: str) -> darr.array:
@@ -445,6 +447,7 @@ def save_minian(
     chunks: Optional[dict] = None,
     compute=True,
     mem_limit="500MB",
+    #subgroup: Optional[str] = None
 ) -> xr.DataArray:
     """
     Save a `xr.DataArray` with `zarr` storage backend following minian
@@ -516,6 +519,14 @@ def save_minian(
         )
     md = {True: "a", False: "w-"}[overwrite]
     fp = os.path.join(dpath, var.name + ".zarr")
+
+    '''
+    if subgroup:
+        dpath = os.path.join(dpath, subgroup)
+        Path(dpath).mkdir(parents = True, exist_ok = True)
+    fp = os.path.join(dpath, var.name + ".zarr")
+    '''
+
     if overwrite:
         try:
             shutil.rmtree(fp)

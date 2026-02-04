@@ -235,6 +235,7 @@ def update_spatial(
     normalize=True,
     size_thres=(9, None),
     in_memory=False,
+    subgroup = None,
 ) -> Tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
     """
     Update spatial components given the input data and temporal dynamic for each
@@ -331,11 +332,23 @@ def update_spatial(
     will result in more sparse estimation of spatial footprints.
     """
     intpath = os.environ["MINIAN_INTERMEDIATE"]
+
     if in_memory:
         C_store = C.compute().values
     else:
         C_path = os.path.join(intpath, C.name + ".zarr", C.name)
+        #C_path = os.path.join(intpath, f"{C.name}.zarr", C.name)
         C_store = zarr.open_array(C_path)
+
+        '''
+        if subgroup:
+            C_group_path = os.path.join(intpath, subgroup, f"{C.name}.zarr")
+            C_store = zarr.open_group(C_group_path)[C.name]
+        else:
+            C_path = os.path.join(intpath, f"{C.name}.zarr", C.name)
+            C_store = zarr.open_array(C_path)
+        '''
+
     print("estimating penalty parameter")
     alpha = sparse_penal * sn
     alpha = rechunk_like(alpha.compute(), sn)
@@ -413,7 +426,7 @@ def update_spatial(
         A_new.rename("A_new"),
         intpath,
         overwrite=True,
-        chunks={"unit_id": 1, "height": -1, "width": -1},
+        chunks={"unit_id": 1, "height": -1, "width": -1}
     )
     add_rets = []
     if update_background:
@@ -973,6 +986,7 @@ def update_temporal(
         coords={"unit_id": uids_new, "lag": np.arange(p)},
         name="g",
     )
+    
     arr_opt = fct.partial(custom_arr_optimize, keep_patterns=["^update_temporal_block"])
     with da.config.set(array_optimize=arr_opt):
         da.compute(
@@ -983,7 +997,35 @@ def update_temporal(
                 for var in [C_new, S_new, b0_new, c0_new, g]
             ]
         )
+    
+
+    '''
+    # Save intermediate outputs under that subfolder
+    arr_opt = fct.partial(custom_arr_optimize, keep_patterns=["^update_temporal_block"])
+
+    subgroup = f"p{p}_sprs{round(sparse_penal,2)}_add{add_lag}_noise{noise_freq}".replace(".", "")
+    group_path = os.path.join(intpath, subgroup)
+
+    da.compute([
+        save_minian(var.chunk({"unit_id": 1}), intpath, compute=False, overwrite=True, subgroup=subgroup)
+        for var in [C_new, S_new, b0_new, c0_new, g]
+    ])
+    '''
+    
+    '''
+    # Load results from the specific subdirectory
+    int_ds = open_minian(group_path, return_dict=True)
+    C_new, S_new, b0_new, c0_new, g = (
+        int_ds["C_new"],
+        int_ds["S_new"],
+        int_ds["b0_new"],
+        int_ds["c0_new"],
+        int_ds["g"],
+    )
+    '''
+
     int_ds = open_minian(intpath, return_dict=True)
+    #int_ds = open_minian(group_path, return_dict = True)
     C_new, S_new, b0_new, c0_new, g = (
         int_ds["C_new"],
         int_ds["S_new"],

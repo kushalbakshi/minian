@@ -1,9 +1,8 @@
 import functools as fct
 import itertools as itt
 import os
-from collections import OrderedDict
-from typing import Callable, List, Optional, Tuple, Union
-from uuid import uuid4
+import subprocess
+import xarray as xr
 
 import colorcet as cc
 import cv2
@@ -18,7 +17,12 @@ import param
 import scipy.sparse as scisps
 import sklearn.mixture
 import skvideo.io
-import xarray as xr
+import time
+from collections import OrderedDict
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+from typing import Optional, Union, Tuple, Callable, List
+from uuid import uuid4
 from bokeh.palettes import Category10_10, Viridis256
 from dask.diagnostics import ProgressBar
 from datashader import count_cat
@@ -38,11 +42,11 @@ from panel import widgets as pnwgt
 from scipy import linalg
 from scipy.ndimage.measurements import center_of_mass
 from scipy.spatial import cKDTree
-
 from .cnmf import compute_AtC
 from .motion_correction import apply_shifts
 from .utilities import custom_arr_optimize, rechunk_like
 
+from tifffile import imwrite
 
 class VArrayViewer:
     """
@@ -209,7 +213,8 @@ class VArrayViewer:
                 curds = self.ds_sub
             fim = fct.partial(img, ds=curds)
             im = hv.DynamicMap(fim, streams=[self.strm_f]).opts(
-                frame_width=500, aspect=self._w / self._h, cmap="Viridis"
+                frame_width=500, aspect=self._w / self._h, cmap="Viridis", 
+                invert_yaxis = True # Note: included invert_yaxis = True since visualizations were inverted from 09/29/2025
             )
             self.xyrange = RangeXY(source=im).rename(x_range="w", y_range="h")
             if not self._layout:
@@ -1262,9 +1267,63 @@ def write_video(
         den = arr_max - arr_min
         arr -= arr_min
         arr /= den
-        arr *= 255
+        arr *= 255    
     arr = arr.clip(0, 255).astype(np.uint8)
     w, h = arr.sizes["width"], arr.sizes["height"]
+   
+    if (fname.endswith(".mp4")):
+        process = (
+        ffmpeg.input("pipe:", format="rawvideo", pix_fmt="gray", s="{}x{}".format(w, h))
+        .filter("pad", int(np.ceil(w / 2) * 2), int(np.ceil(h / 2) * 2))
+        .output(fname, pix_fmt="yuv420p", vcodec="libx264", r=30, **options)
+        .overwrite_output()
+        .run_async(pipe_stdin=True)
+        )
+        for blk in arr.data.blocks:
+            process.stdin.write(np.array(blk).tobytes())
+        process.stdin.close()
+        process.wait()
+   
+    elif fname.endswith(".tif"):
+        arr = arr.compute() # CHECK FOR THIS (ERROR)
+
+        # Ensure the output directory exists
+        os.makedirs(vpath, exist_ok=True)
+        tiff_filename = os.path.join(vpath, vname)
+
+        # Collect and convert frames to a single array for saving
+        try:
+            frames = [
+                #np.array(arr.isel(frame=i)).clip(0, 65535).astype(np.uint16)
+                np.array(arr.isel(frame=i)).clip(0, 255).astype(np.uint8)
+                for i in range(arr.sizes["frame"])
+            ]
+            print(f"Total frames processed: {len(frames)}")
+
+            # Combine frames into a 3D array (T, Y, X)
+            frames = np.stack(frames, axis=0)
+            print(f"Combined frame shape: {frames.shape}, dtype: {frames.dtype}")
+
+            # Save all frames into a multi-page TIFF file
+            imwrite(
+                tiff_filename,
+                frames,
+                imagej=True,
+                metadata={'axes': 'TYX'},  # Corrected axes metadata
+            )
+            print(f"Multi-page TIFF saved as {tiff_filename}")
+        except Exception as e:
+            print(f"Error while saving multi-page TIFF: {e}")
+            raise
+
+        return tiff_filename
+
+    else:
+        raise ValueError(f"Unsupported file format for {fname}. Please use .mp4 or .tif.")
+
+    print(f"File saved as {fname}")
+    return fname  
+
     process = (
         ffmpeg.input("pipe:", format="rawvideo", pix_fmt="gray", s="{}x{}".format(w, h))
         .filter("pad", int(np.ceil(w / 2) * 2), int(np.ceil(h / 2) * 2))
@@ -1680,6 +1739,7 @@ def visualize_preprocess(
     }
 
     def _vis(f):
+        f = f.sel(height=slice(None, None, -1))
         im = hv.Image(f, kdims=["width", "height"]).opts(**opts_im)
         cnt = hv.operation.contours(im).opts(**opts_cnt)
         return im, cnt
@@ -1750,14 +1810,15 @@ def visualize_seeds(
     h, w = max_proj.sizes["height"], max_proj.sizes["width"]
     asp = w / h
     pt_cmap = {True: "white", False: "red"}
-    opts_im = dict(plot=dict(frame_width=600, aspect=asp), style=dict(cmap="Viridis"))
+    opts_im = dict(plot=dict(frame_width=600, aspect=asp, invert_yaxis = True), style=dict(cmap="Viridis"))
     opts_pts = dict(
         plot=dict(
             frame_width=600,
             aspect=asp,
+            invert_yaxis = True,
             size_index="seeds",
             color_index=mask,
-            tools=["hover"],
+            tools=["hover"]
         ),
         style=dict(fill_alpha=0.8, line_alpha=0, cmap=pt_cmap),
     )
@@ -2195,3 +2256,232 @@ def visualize_motion(motion: xr.DataArray) -> Union[hv.Layout, hv.NdOverlay]:
                 height=hv.Curve(motion.sel(shift_dim="height")).opts(**opts_cv),
             )
         )
+
+
+
+def add_title(img: Image, title: str, title_size: int) -> Image:
+    """
+    Adds title on top of image.
+    
+    Parameters
+    ----------
+    img: Image
+        Image on top of which title will be added.
+    title: str
+        Text of the title.
+    title_size: int
+        Font size of the title.
+    
+    Returns
+    -------
+    img_new: Image
+        Image with added title.
+    """
+    font = ImageFont.truetype("FONTS/arial.ttf", title_size) 
+    _, _, title_width, title_height = ImageDraw.Draw(img).textbbox((0, 0), title, font=font)
+    title_pad = title_height // 3
+
+    img_new = Image.new(img.mode, (img.width, img.height + title_height + title_pad), color=(255,255,255))
+    img_new.paste(img, (0, title_height + title_pad))
+    draw = ImageDraw.Draw(img_new)
+    draw.text(((img_new.width - title_width)/2, 0), title, font=font, fill=(0,0,0))
+    return img_new
+ 
+ 
+def screenshot_plot(
+    plot,
+    title: Optional[str] = None,
+    name: Optional[str]=None,
+    dest_folder: Union[Path, str] = Path.cwd() / 'screenshots',
+    selector: str = '".bk-root .bk"',
+) -> Path:
+    """
+    Exports plot to html and takes its screenshot.
+    
+    Parameters
+    ----------
+    plot: Image
+        Image on top of which title will be added.
+    title: str, optional
+        Text of the title. This value is optional. If it is not given image will have
+        no title
+    name: str, optional
+        name of the file. If name is not given, it will be created from title. If neither
+        title nor name are given, default name is 'output.png'.
+    dest_folder: Path, str
+        Default is './screenshots'.
+    selector: str
+        CSS selector for part of HTML export which will be kept in final export. Default
+        is '".bk-root .bk"'.
+    
+    Returns
+    -------
+    dest: Path
+        Path to raw screenshot which has to be postprocessed. Path is final location of
+        saved plot.
+    """
+    if not name and not title:
+        name = 'output.png'
+    else:
+        name = name if name else title.strip().lower().replace(' ', '_').replace(',', '') \
+                                    .replace(':', '').replace('=', '-').replace("'", '') \
+                                    .replace('"', ""). replace('{', '').replace('}', '') + '.png'
+    dest_folder = Path(dest_folder) if type(dest_folder) is str else dest_folder
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    tmp_html = dest_folder / '__tmp.html'
+    plot_base = type(plot).__module__
+    panel_plot = plot_base.startswith('panel')
+    holoviews_plot = plot_base.startswith('holoviews')
+    if panel_plot:
+        plot.save(tmp_html)
+    elif holoviews_plot:
+        hv.save(plot, tmp_html, fmt='html')
+    else:
+        print(f'Not implemented: {plot_base}')
+        return
+    dest = dest_folder / name
+    if dest.exists():
+        dest.unlink()
+    command = f"shot-scraper shot {tmp_html.as_posix()} -o {dest.as_posix()} --selector {selector}"
+    success = 0
+    repeat = 5
+    retry_wait = 1
+    downloaded = False
+    for _ in range(repeat):
+        res = subprocess.call(command, shell=True)
+        if res == success and dest.exists():
+            downloaded = True
+            break
+        time.sleep(retry_wait)
+    if not downloaded:
+        raise RuntimeError('Failed to screenshot html. Potential problem with shot-scraper.'
+                           f'Subprocess result: {res=}, file created: {dest.exists()}.')
+    tmp_html.unlink()
+    return dest
+
+
+def remove_bokeh_toolbar(
+    img_raw: Image,
+    toolbar_size: int = 35,
+    toolbar_pos: str = 'top',
+    comment_height: int = 30,
+    comment_present: bool = False,
+    crop_bottom: int = 0,
+) -> Image:
+    """
+    Removes Bokeh toolbar from screenshot. If there is a comment/info above horizontally
+    orientet toolbar at the top of image, it keeps the comment.
+    
+    Parameters
+    ----------
+    img_raw: Image
+        Raw image object which needs to be cropped according to the data in other
+        parameters.
+    toolbar_size: int
+        Size (in pixel) of Bokeh toolbar which will be cropped from the screenshot.
+        If toolbar_pos is 'top' or 'bottom', this is toolbar height, otherwise it is
+        toolbar width.
+        Default is 35 px for horisontal toolbar ('left', 'right' orientations) and 25px for
+        vertical ('up', 'down' orientations).
+    toolbar_pos: str
+        Toolbar position related to the rest of plot. Possible values: 'top', 'bottom',
+        'left', 'right', 'none'.
+    comment_height: int
+        Height (in pixel) of comment text which will be kept in the screenshot when
+        removing the Bokeh toolbar. It is usually above the toolbar
+        Default is 30 px.
+    comment_present: bool
+        Describes if there is a comment text present above Bokeh toolbar. Default value
+        is false.
+    crop_bottom: int
+        Blank space (in pixel) of plot which will be crop from the final image. Default
+        value is 0px.
+        
+    Returns
+    -------
+    img: Image
+        Path to raw screenshot which has to be postprocessed. Path is final location of
+        saved plot.
+    """
+    toolbar_horizontal = toolbar_pos in ('top', 'down')
+    toolbar_vertical = toolbar_pos in ('left', 'right')
+    toolbar_size = toolbar_size - 10 if toolbar_vertical else toolbar_size
+    img_height = img_raw.height - toolbar_size*toolbar_horizontal - crop_bottom
+    img_width = img_raw.width - toolbar_size*toolbar_vertical
+    x_0 = toolbar_size*(toolbar_pos == 'left')
+    y_0 = toolbar_size*(toolbar_pos == 'top')
+    img = Image.new(img_raw.mode, (img_width, img_height), color=(255,255,255))
+    if comment_present:
+        box_comment = (0, 0, img.width, comment_height)
+        img_comment = img_raw.crop(box_comment)
+        img.paste(img_comment, (0, 0))
+    box_plot = (x_0, y_0 + comment_height*comment_present,
+                x_0 + img_width, y_0 + img_height + comment_height*comment_present)
+    img_plot = img_raw.crop(box_plot)
+    img.paste(img_plot, (0, comment_height*comment_present))
+    return img
+
+ 
+def export_plot(
+    plot,
+    title: Optional[str] = None,
+    title_size: int = 25,
+    name: Optional[str]=None,
+    dest_folder: Union[Path, str] = Path.cwd() / 'screenshots',
+    selector: str = '".bk-root .bk"',
+    toolbar_size: int = 35,
+    toolbar_pos: str = 'top',
+    comment_height: int = 30,
+    comment_present: bool = False,
+    crop_bottom: int = 0,
+):
+    """
+    Exports plot to the image. Image is saved according to the parameter `dest_folder`,
+    named according to the parameters `name` or `title`.
+    
+    Parameters
+    ----------
+    plot: Image
+        Image on top of which title will be added.
+    title: str, optional
+        Text of the title. This value is optional. If it is not given image will have
+        no title
+    title_size: int
+        Font size of the title.
+    name: str, optional
+        name of the file. If name is not given, it will be created from title. If neither
+        title nor name are given, default name is 'output.png'.
+    dest_folder: Path, str
+        Default is './screenshots'.
+    selector: str
+        CSS selector for part of HTML export which will be kept in final export. Default
+        is '".bk-root .bk"'.
+    toolbar_size: int
+        Size (in pixel) of Bokeh toolbar which will be cropped from the screenshot.
+        If toolbar_pos is 'top' or 'bottom', this is toolbar height, otherwise it is
+        toolbar width.
+        Default is 35 px for horisontal toolbar ('left', 'right' orientations) and 25px for
+        vertical ('up', 'down' orientations).
+    toolbar_pos: str
+        Toolbar position related to the rest of plot. Possible values: 'top', 'bottom',
+        'left', 'right', 'none'.
+    comment_height: int
+        Height (in pixel) of comment text which will be kept in the screenshot when
+        removing the Bokeh toolbar. It is usually above the toolbar
+        Default is 30 px.
+    comment_present: bool
+        Describes if there is a comment text present above Bokeh toolbar. Default value
+        is false.
+    crop_bottom: int
+        Blank space (in pixel) of plot which will be crop from the final image. Default
+        value is 0px.
+    """
+    dest = screenshot_plot(plot, title=title, name=name, dest_folder=dest_folder, selector=selector)
+    img = Image.open(dest)
+    img = remove_bokeh_toolbar(img, toolbar_size=toolbar_size, toolbar_pos=toolbar_pos,
+                    comment_height=comment_height, comment_present=comment_present,
+                    crop_bottom=crop_bottom) 
+    if title:
+        img = add_title(img, title, title_size) 
+    img.save(dest)
+    print(f'Plot succesfully saved at {str(dest)}.')
