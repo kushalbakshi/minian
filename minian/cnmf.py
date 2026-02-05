@@ -84,7 +84,7 @@ def get_noise_fft(
         kwargs=dict(
             noise_range=noise_range, noise_method=noise_method, threads=threads
         ),
-        output_dtypes=[np.float],
+        output_dtypes=[float],
     )
     return sn
 
