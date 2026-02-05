@@ -1552,18 +1552,23 @@ def label_connected(adj: np.ndarray, only_connected=False) -> np.ndarray:
         The labels for each components. Should have length `adj.shape[0]`.
     """
     try:
-        np.fill_diagonal(adj, 0)
-        adj = np.triu(adj)
-        g = nx.convert_matrix.from_numpy_matrix(adj)
-    except:
-        g = nx.convert_matrix.from_scipy_sparse_matrix(adj)
-    labels = np.zeros(adj.shape[0], dtype=np.int)
+        adj = adj.toarray()  # Convert sparse to dense if needed
+    except AttributeError:
+        pass  # Already dense
+    
+    np.fill_diagonal(adj, 0)
+    adj = np.triu(adj)
+    
+    # Use modern NetworkX API
+    g = nx.from_numpy_array(adj)
+    
+    labels = np.zeros(adj.shape[0], dtype=int)
     for icomp, comp in enumerate(nx.connected_components(g)):
-        comp = list(comp)
-        if only_connected and len(comp) == 1:
-            labels[comp] = -1
-        else:
-            labels[comp] = icomp
+        for node in comp:
+            labels[node] = icomp
+    if only_connected:
+        iso_mask = np.array([len(c) == 1 for c in nx.connected_components(g)])
+        labels[np.isin(labels, np.where(iso_mask)[0])] = -1
     return labels
 
 
